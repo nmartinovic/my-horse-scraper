@@ -3,14 +3,62 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual env
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 .venv/
-
-# Environment vars
+venv/
+ENV/
+env/
 .env
+.venv*  # any other venv directories
 
-# Playwright cache
-playwright/.cache/
+# Pytest cache
+.pytest_cache/
+.cache/
 
-# SQLite database
-data.sqlite
+# mypy cache
+.mypy_cache/
+
+# Watchman
+.watchmanconfig
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# OneDrive lock files
+~*
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Scraped data files (from bookmarklet)
+*.txt
