@@ -29,7 +29,7 @@ ENV/
 env/
 .env
 .venv*  # any other venv directories
-
+.venv311
 # Pytest cache
 .pytest_cache/
 .cache/
