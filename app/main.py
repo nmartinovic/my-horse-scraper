@@ -15,7 +15,7 @@ from app.scheduler import scheduler
 
 # On Windows, use SelectorEventLoopPolicy everywhere (so playwright can spawn its subprocesses)
 if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,7 +109,7 @@ def dashboard():
         <h2>Race Details</h2>
         <table border="1" id="details-table">
           <thead><tr>
-            <th>ID</th><th>Race ID</th><th>Bookmarklet JSON</th>
+            <th>ID</th><th>Race ID</th><th>Bookmarklet JSON</th><th>Prediction Response</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -153,17 +153,23 @@ def dashboard():
             const tbody = document.querySelector('#details-table tbody');
             tbody.innerHTML = '';
             details.forEach(d => {
-                let content;
+                let bmText, predText;
                 try {
-                    content = JSON.stringify(JSON.parse(d.bookmarklet_json), null, 2);
+                    bmText = JSON.stringify(JSON.parse(d.bookmarklet_json), null, 2);
                 } catch {
-                    content = d.bookmarklet_json;
+                    bmText = d.bookmarklet_json;
+                }
+                try {
+                    predText = JSON.stringify(JSON.parse(d.prediction_response), null, 2);
+                } catch {
+                    predText = d.prediction_response || "";
                 }
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                   <td>${d.id}</td>
                   <td>${d.race_id}</td>
-                  <td><pre>${content}</pre></td>
+                  <td><pre>${bmText}</pre></td>
+                  <td><pre>${predText}</pre></td>
                 `;
                 tbody.appendChild(tr);
             });

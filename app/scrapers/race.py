@@ -3,6 +3,10 @@
 import sys
 import asyncio
 import logging
+import httpx
+import json
+import math
+import pprint
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from sqlmodel import Session, select
@@ -17,19 +21,34 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+PREDICT_URL = (
+    "http://127.0.0.1:8080/api/predict/html"
+    "?win_strategy=mid_odds_balanced"
+    "&include_place_bets=true"
+    "&include_deuzio_bets=true"
+    "&place_strategy=conservative_power"
+    "&deuzio_strategy=aggressive"
+    "&place_min_probability=0.25"
+    "&place_min_ev=2.5"
+    "&deuzio_min_probability=0.10"
+    "&deuzio_min_ev=1.0"
+    "&bankroll=103"
+)
+
+FORWARD_URL = "http://127.0.0.1:5173/place-bets"
+
+def round_down(amount: float) -> int:
+    return max(int(amount), 2)
 
 def _scrape_sync(race_id: int):
-    """Synchronously scrape one race by running the bookmarklet JS on its page."""
     log.info("→ _scrape_sync starting for race_id=%d", race_id)
 
-    # On Windows, ensure ProactorEventLoopPolicy so playwright can spawn subprocesses
     if sys.platform.startswith("win"):
         policy = asyncio.get_event_loop_policy()
         if not isinstance(policy, asyncio.WindowsProactorEventLoopPolicy):
             log.debug("Setting WindowsProactorEventLoopPolicy")
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    # 1) Load URL from DB
     with Session(engine) as sess:
         race = sess.exec(select(Race).where(Race.id == race_id)).one()
     url = race.url
@@ -41,10 +60,9 @@ def _scrape_sync(race_id: int):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
-            log.debug("Navigating to page (DOMContentLoaded)")
-            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            log.debug("Navigating to page (networkidle)")
+            page.goto(url, wait_until="networkidle", timeout=60_000)
 
-            # 2) Run your bookmarklet logic in-page and return the text blob
             log.debug("Running bookmarklet extraction")
             js = r"""
             () => {
@@ -70,10 +88,52 @@ def _scrape_sync(race_id: int):
                 log.error("⏰ Timeout running bookmarklet on race %d", race_id)
                 content = None
 
-            # 3) Persist into RaceDetail
+            prediction_response = None
+
             if content:
+                try:
+                    headers = {"Content-Type": "text/html; charset=utf-8"}
+                    resp = httpx.post(PREDICT_URL, content=content.encode("utf-8"), headers=headers, timeout=10.0)
+                    resp.raise_for_status()
+                    prediction_response = resp.text
+                    log.info("📬 Sent race %d to prediction server (status %d)", race_id, resp.status_code)
+
+                    parsed = json.loads(prediction_response)
+
+                    recommendations = parsed.get("recommendations", [])
+                    for r in recommendations:
+                        original = r.get("bet_amount", 0)
+                        r["bet_amount"] = round_down(original)
+
+                    summary = parsed.get("summary", {})
+                    summary.setdefault("boulot_bets", 0)
+
+                    forwarded_payload = {
+                        "race_url": url,
+                        "recommendations": recommendations,
+                        "summary": summary,
+                    }
+
+                    log.debug("📦 Forwarding payload to place-bets:\n%s", pprint.pformat(forwarded_payload))
+                    forward_resp = httpx.post(FORWARD_URL, json=forwarded_payload, timeout=10.0)
+                    try:
+                        forward_resp.raise_for_status()
+                    except httpx.HTTPStatusError as e:
+                        log.error("❌ Failed with %s\nResponse body:\n%s", e, forward_resp.text)
+                        raise
+                    log.info("🚀 Forwarded prediction to %s (status %d)", FORWARD_URL, forward_resp.status_code)
+
+                except Exception as e:
+                    log.exception("❌ Failed during prediction or forwarding for race %d: %s", race_id, e)
+
                 with Session(engine) as sess:
-                    sess.add(RaceDetail(race_id=race_id, bookmarklet_json=content))
+                    race_detail = RaceDetail(
+                        race_id=race_id,
+                        bookmarklet_json=content,
+                        prediction_response=prediction_response,
+                        race_url=url,
+                    )
+                    sess.add(race_detail)
                     sess.commit()
                 log.info("✅ Saved RaceDetail for race %d", race_id)
             else:
@@ -87,18 +147,14 @@ def _scrape_sync(race_id: int):
     except Exception:
         log.exception("🐛 Unexpected error in _scrape_sync for race %d", race_id)
 
-
 async def run_race_scrape(race_id: int):
-    """APS-scheduler entrypoint: delegate to _scrape_sync in a thread."""
     log.info("Scheduling scrape for race %d", race_id)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _scrape_sync, race_id)
 
-
 if __name__ == "__main__":
     import argparse
 
-    # Windows event-loop fix again if run as a script
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 

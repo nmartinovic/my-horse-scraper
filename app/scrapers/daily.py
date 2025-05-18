@@ -20,7 +20,6 @@ from app.scrapers.race import run_race_scrape
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# On Windows, use the Proactor policy so Playwright’s subprocesses work
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -44,87 +43,97 @@ async def _dismiss_cookies(page: Page) -> None:
 async def _extract_races(page: Page) -> List[Dict[str, Any]]:
     await _dismiss_cookies(page)
 
-    # wait for the list to be attached
     await page.wait_for_selector(
         "ul.races-list li.race[data-betting-race-id]",
         state="attached",
         timeout=60_000,
     )
 
-    # grab real URLs off each <a>, not just build from the ID
+
     raw = await page.eval_on_selector_all(
-        "ul.races-list li.race[data-betting-race-id]",
-        """
-        nodes => nodes.map(li => {
-            const id    = li.getAttribute('data-betting-race-id');
-            const epoch = li.getAttribute('data-betting-race-time');
-            // look for the anchor inside, if present
-            const anchor = li.querySelector('a[href*="/turf/course/"]');
-            const url = anchor
-                ? anchor.href
-                : `${window.location.origin}/turf/course/${id}`;
-            return {
-                unibet_id: id,
-                epoch_ms:  epoch,
-                url:       url,
-                meeting:   li.querySelector('h3.meeting-title')?.textContent?.trim() || "",
-                name:      li.querySelector('h4.race-title')?.textContent?.trim() || "",
-                distance:  li.querySelector('span.distance')?.textContent?.trim() || ""
-            };
-        })
-        """,
-    )
-    logger.debug("raw races from page → %O", raw)
+    "ul.races-list li.race[data-betting-race-id]",
+    """
+    nodes => nodes.map(li => {
+        const id = li.getAttribute('data-betting-race-id');
+        const epoch = li.getAttribute('data-betting-race-time');
+        
+        const meetingTitle = li.querySelector('h3.meeting-title')?.textContent?.trim() || "";
+        const raceTitle = li.querySelector('h4.race-title')?.textContent?.trim() || "";
+
+        const rankSpan = li.querySelector('.rank');
+        const meetingRank = rankSpan.querySelector('.meetingrank')?.textContent?.trim() || "";
+        const courseNumberMatch = rankSpan.textContent.trim().match(/C(\\d+)/);
+        const courseNumber = courseNumberMatch ? 'C' + courseNumberMatch[1] : "";
+
+        const dateObj = new Date(parseInt(epoch));
+        const day = String(dateObj.getDate()).padStart(2, '0');
+        const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const year = dateObj.getFullYear();
+        const urlDate = `${day}-${month}-${year}`;
+
+        const slugify = str => str
+            .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()
+            .replace(/^-+|-+$/g, '');
+
+        const locationSlug = slugify(meetingTitle);
+        const raceNameSlug = slugify(raceTitle);
+
+        const url = `https://www.unibet.fr/turf/race/${urlDate}-${meetingRank}-${courseNumber}-${locationSlug}-${raceNameSlug}.html`;
+
+        return {
+            unibet_id: id,
+            epoch_ms: epoch,
+            url: url,
+            meeting: meetingTitle,
+            name: raceTitle,
+            distance: li.querySelector('span.distance')?.textContent?.trim() || ""
+        };
+    })
+    """,
+)
+
 
     races: List[Dict[str, Any]] = []
     for r in raw:
         try:
-            # parse the epoch (ms) *as UTC*, then convert to Europe/Paris
+            logger.info(f"Processing race: {r}")
             race_utc = datetime.fromtimestamp(int(r["epoch_ms"]) / 1000, tz=timezone.utc)
             race_local = race_utc.astimezone(ZoneInfo("Europe/Paris"))
+            races.append({
+                "unibet_id": r["unibet_id"],
+                "name": r["name"],
+                "meeting": r["meeting"],
+                "race_time": race_local,
+                "url": r["url"],
+                "surface": None,
+                "distance_m": int(r["distance"].rstrip("m")) if r["distance"].endswith("m") else None,
+                "scraped_at": datetime.utcnow(),
+            })
         except Exception as exc:
-            logger.warning("Skipping bad epoch %r for %s: %s", r["epoch_ms"], r["unibet_id"], exc)
-            continue
-
-        races.append({
-            "unibet_id":  r["unibet_id"],
-            "name":       r["name"],
-            "meeting":    r["meeting"],
-            "race_time":  race_local,              # tz-aware Europe/Paris
-            "url":        r["url"],
-            "surface":    None,
-            "distance_m": int(r["distance"].rstrip("m")) if r["distance"].endswith("m") else None,
-            "scraped_at": datetime.utcnow(),
-        })
-
+            logger.exception(f"Failed processing race {r['unibet_id']}: {exc}")
     return races
 
 
 def _schedule_per_race_jobs(races: List[Race]) -> None:
-    """
-    For each Race (tz-aware Europe/Paris), schedule its scrape
-    exactly 3 minutes before its start, *in UTC*.
-    """
     from app.scheduler import scheduler
 
     for race in races:
-        # 1) Take the stored Paris time, convert to UTC
         race_start_utc = race.race_time.astimezone(timezone.utc)
-        # 2) Subtract 3 minutes *in UTC*
         run_time_utc = race_start_utc - timedelta(minutes=3)
 
         now_utc = datetime.now(timezone.utc)
         if run_time_utc <= now_utc:
-            continue  # already in the past
+            continue
 
         job_id = f"race_{race.id}"
         if scheduler.get_job(job_id):
-            continue  # don't double-schedule
+            continue
 
         scheduler.add_job(
             run_race_scrape,
             trigger="date",
-            run_date=run_time_utc,    # tz-aware UTC datetime
+            run_date=run_time_utc,
             args=[race.id],
             id=job_id,
             replace_existing=True,
@@ -132,7 +141,7 @@ def _schedule_per_race_jobs(races: List[Race]) -> None:
         )
 
         logger.info(
-            "[scheduler] race %d scheduled at %s UTC  (3m before local %s)",
+            "[scheduler] race %d scheduled at %s UTC (3m before local %s)",
             race.id,
             run_time_utc.isoformat(),
             race.race_time.isoformat(),
@@ -140,9 +149,6 @@ def _schedule_per_race_jobs(races: List[Race]) -> None:
 
 
 async def run_daily_scrape() -> None:
-    """
-    Fetch today’s programme, upsert into DB, then schedule each per-race job.
-    """
     log = ScrapeLog(job_type="daily", started_at=datetime.utcnow(), status="ok")
     logger.info("→ daily scrape starting")
 
@@ -186,3 +192,6 @@ async def run_daily_scrape() -> None:
                 sess.add(log)
                 sess.commit()
             await browser.close()
+
+if __name__ == "__main__":
+    asyncio.run(run_daily_scrape())

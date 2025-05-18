@@ -18,10 +18,9 @@ class RaceDetail(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     race_id: int = Field(foreign_key="race.id")
 
-    # pydantic sees a normal Python dict ...
-    bookmarklet_json: Dict[str, Any] = Field(
-        sa_column=Column(SAJSON)              # ... but SQLAlchemy still stores JSON
-    )
+    bookmarklet_json: Dict[str, Any] = Field(sa_column=Column(SAJSON))
+    prediction_response: Optional[str] = None
+    race_url: Optional[str] = None
 
     scraped_at: datetime = Field(default_factory=datetime.utcnow)
 

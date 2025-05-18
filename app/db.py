@@ -1,8 +1,11 @@
-from sqlmodel import SQLModel, create_engine
-from .config import get_settings
+from sqlmodel import SQLModel, create_engine, Session as SQLModelSession
 
-settings = get_settings()
-engine = create_engine(settings.DATABASE_URL, echo=False)
+engine = create_engine("sqlite:///data.sqlite", echo=False)
 
-def init_db() -> None:
+def init_db():
     SQLModel.metadata.create_all(engine)
+
+def get_session():
+    return SQLModelSession(engine)
+
+Session = SQLModelSession(engine)
