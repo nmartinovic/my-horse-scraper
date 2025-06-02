@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.db import engine
 from app.models import Race, ScrapeLog
 from app.scrapers.race import run_race_scrape
+from app.scheduler import scheduler  # ⬅️ added
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -49,50 +50,48 @@ async def _extract_races(page: Page) -> List[Dict[str, Any]]:
         timeout=60_000,
     )
 
-
     raw = await page.eval_on_selector_all(
-    "ul.races-list li.race[data-betting-race-id]",
-    """
-    nodes => nodes.map(li => {
-        const id = li.getAttribute('data-betting-race-id');
-        const epoch = li.getAttribute('data-betting-race-time');
-        
-        const meetingTitle = li.querySelector('h3.meeting-title')?.textContent?.trim() || "";
-        const raceTitle = li.querySelector('h4.race-title')?.textContent?.trim() || "";
+        "ul.races-list li.race[data-betting-race-id]",
+        """
+        nodes => nodes.map(li => {
+            const id = li.getAttribute('data-betting-race-id');
+            const epoch = li.getAttribute('data-betting-race-time');
 
-        const rankSpan = li.querySelector('.rank');
-        const meetingRank = rankSpan.querySelector('.meetingrank')?.textContent?.trim() || "";
-        const courseNumberMatch = rankSpan.textContent.trim().match(/C(\\d+)/);
-        const courseNumber = courseNumberMatch ? 'C' + courseNumberMatch[1] : "";
+            const meetingTitle = li.querySelector('h3.meeting-title')?.textContent?.trim() || "";
+            const raceTitle = li.querySelector('h4.race-title')?.textContent?.trim() || "";
 
-        const dateObj = new Date(parseInt(epoch));
-        const day = String(dateObj.getDate()).padStart(2, '0');
-        const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-        const year = dateObj.getFullYear();
-        const urlDate = `${day}-${month}-${year}`;
+            const rankSpan = li.querySelector('.rank');
+            const meetingRank = rankSpan.querySelector('.meetingrank')?.textContent?.trim() || "";
+            const courseNumberMatch = rankSpan.textContent.trim().match(/C(\\d+)/);
+            const courseNumber = courseNumberMatch ? 'C' + courseNumberMatch[1] : "";
 
-        const slugify = str => str
-            .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
-            .replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()
-            .replace(/^-+|-+$/g, '');
+            const dateObj = new Date(parseInt(epoch));
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const year = dateObj.getFullYear();
+            const urlDate = `${day}-${month}-${year}`;
 
-        const locationSlug = slugify(meetingTitle);
-        const raceNameSlug = slugify(raceTitle);
+            const slugify = str => str
+                .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                .replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()
+                .replace(/^-+|-+$/g, '');
 
-        const url = `https://www.unibet.fr/turf/race/${urlDate}-${meetingRank}-${courseNumber}-${locationSlug}-${raceNameSlug}.html`;
+            const locationSlug = slugify(meetingTitle);
+            const raceNameSlug = slugify(raceTitle);
 
-        return {
-            unibet_id: id,
-            epoch_ms: epoch,
-            url: url,
-            meeting: meetingTitle,
-            name: raceTitle,
-            distance: li.querySelector('span.distance')?.textContent?.trim() || ""
-        };
-    })
-    """,
-)
+            const url = `https://www.unibet.fr/turf/race/${urlDate}-${meetingRank}-${courseNumber}-${locationSlug}-${raceNameSlug}.html`;
 
+            return {
+                unibet_id: id,
+                epoch_ms: epoch,
+                url: url,
+                meeting: meetingTitle,
+                name: raceTitle,
+                distance: li.querySelector('span.distance')?.textContent?.trim() || ""
+            };
+        })
+        """,
+    )
 
     races: List[Dict[str, Any]] = []
     for r in raw:
@@ -115,37 +114,39 @@ async def _extract_races(page: Page) -> List[Dict[str, Any]]:
     return races
 
 
+def schedule_race(race: Race) -> None:
+    race_start_utc = race.race_time.astimezone(timezone.utc)
+    run_time_utc = race_start_utc - timedelta(seconds=120)  # 2 minutes
+
+    now_utc = datetime.now(timezone.utc)
+    if run_time_utc <= now_utc:
+        return
+
+    job_id = f"race_{race.id}"
+    if scheduler.get_job(job_id):
+        return
+
+    scheduler.add_job(
+        run_race_scrape,
+        trigger="date",
+        run_date=run_time_utc,
+        args=[race.id],
+        id=job_id,
+        replace_existing=True,
+        misfire_grace_time=60,
+    )
+
+    logger.info(
+        "[scheduler] race %d scheduled at %s UTC (2m before local %s)",
+        race.id,
+        run_time_utc.isoformat(),
+        race.race_time.isoformat(),
+    )
+
+
 def _schedule_per_race_jobs(races: List[Race]) -> None:
-    from app.scheduler import scheduler
-
     for race in races:
-        race_start_utc = race.race_time.astimezone(timezone.utc)
-        run_time_utc = race_start_utc - timedelta(minutes=3)
-
-        now_utc = datetime.now(timezone.utc)
-        if run_time_utc <= now_utc:
-            continue
-
-        job_id = f"race_{race.id}"
-        if scheduler.get_job(job_id):
-            continue
-
-        scheduler.add_job(
-            run_race_scrape,
-            trigger="date",
-            run_date=run_time_utc,
-            args=[race.id],
-            id=job_id,
-            replace_existing=True,
-            misfire_grace_time=60,
-        )
-
-        logger.info(
-            "[scheduler] race %d scheduled at %s UTC (3m before local %s)",
-            race.id,
-            run_time_utc.isoformat(),
-            race.race_time.isoformat(),
-        )
+        schedule_race(race)
 
 
 async def run_daily_scrape() -> None:
@@ -192,6 +193,18 @@ async def run_daily_scrape() -> None:
                 sess.add(log)
                 sess.commit()
             await browser.close()
+
+
+def reschedule_jobs() -> None:
+    """Clear and re-schedule all race jobs."""
+    scheduler.remove_all_jobs()
+    with Session(engine) as session:
+        races = session.exec(select(Race)).all()
+        now = datetime.utcnow()
+        for race in races:
+            if race.race_time > now:
+                schedule_race(race)
+
 
 if __name__ == "__main__":
     asyncio.run(run_daily_scrape())

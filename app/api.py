@@ -8,7 +8,8 @@ from sqlmodel import Session, select
 from .db import engine
 from .models import Race, RaceDetail
 from .scrapers.daily import run_daily_scrape
-from .scrapers.race import run_race_scrape
+from .scrapers.race import run_race_scrape, schedule_race_scrape
+from .scheduler import scheduler
 
 router = APIRouter(prefix="/api")
 
@@ -94,3 +95,20 @@ async def get_race_detail(race_id: int):
             )
 
         return {"race": race, "bookmarklet_json": detail.bookmarklet_json}
+
+
+# ── POST /reschedule ─────────────────────────────────────────────────────
+@router.post(
+    "/reschedule",
+    status_code=status.HTTP_200_OK,
+    summary="Force rescheduling of all race scrape jobs",
+)
+async def reschedule_all_races():
+    scheduler.remove_all_jobs()
+
+    with Session(engine) as s:
+        races = s.exec(select(Race)).all()
+        for race in races:
+            schedule_race_scrape(race)
+
+    return {"message": f"{len(races)} races rescheduled"}

@@ -10,7 +10,7 @@ from sqlmodel import Session, select, delete
 
 from app.db import engine
 from app.models import Race, RaceDetail
-from app.scrapers.daily import run_daily_scrape
+from app.scrapers.daily import run_daily_scrape, reschedule_jobs
 from app.scheduler import scheduler
 
 # On Windows, use SelectorEventLoopPolicy everywhere (so playwright can spawn its subprocesses)
@@ -39,7 +39,6 @@ async def _stop_scheduler():
 
 
 def _run_daily_in_thread():
-    # just run the async daily scrape in a fresh loop
     asyncio.run(run_daily_scrape())
 
 
@@ -48,6 +47,13 @@ async def trigger_daily_scrape(background_tasks: BackgroundTasks):
     logger.info("→ trigger_daily_scrape endpoint called")
     background_tasks.add_task(_run_daily_in_thread)
     return {"status": "daily scrape scheduled"}
+
+
+@app.post("/api/reschedule", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_reschedule():
+    logger.info("→ reschedule endpoint called")
+    reschedule_jobs()
+    return {"status": "rescheduled all jobs"}
 
 
 @app.get("/api/races")
@@ -97,6 +103,7 @@ def dashboard():
         <h1>Horse Racing Dashboard</h1>
         <button onclick="clearDb()">Clear DB</button>
         <button onclick="runDaily()">Run Daily Scrape</button>
+        <button onclick="reschedule()">Reschedule Jobs</button>
 
         <h2>Races</h2>
         <table border="1" id="races-table">
@@ -200,6 +207,11 @@ def dashboard():
         async function runDaily() {
             await fetch('/api/scrape/daily/run', { method: 'POST' });
             alert('Daily scrape scheduled');
+            loadAll();
+        }
+        async function reschedule() {
+            await fetch('/api/reschedule', { method: 'POST' });
+            alert('Reschedule triggered');
             loadAll();
         }
         window.onload = loadAll;
