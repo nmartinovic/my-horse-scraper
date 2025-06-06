@@ -116,7 +116,7 @@ def dashboard():
         <h2>Race Details</h2>
         <table border="1" id="details-table">
           <thead><tr>
-            <th>ID</th><th>Race ID</th><th>Bookmarklet JSON</th><th>Prediction Response</th>
+            <th>ID</th><th>Race ID</th><th>Request Sent</th><th>Prediction Response</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -160,11 +160,11 @@ def dashboard():
             const tbody = document.querySelector('#details-table tbody');
             tbody.innerHTML = '';
             details.forEach(d => {
-                let bmText, predText;
+                let requestText, predText;
                 try {
-                    bmText = JSON.stringify(JSON.parse(d.bookmarklet_json), null, 2);
+                    requestText = JSON.stringify(JSON.parse(d.bookmarklet_json), null, 2);
                 } catch {
-                    bmText = d.bookmarklet_json;
+                    requestText = d.bookmarklet_json;
                 }
                 try {
                     predText = JSON.stringify(JSON.parse(d.prediction_response), null, 2);
@@ -175,7 +175,7 @@ def dashboard():
                 tr.innerHTML = `
                   <td>${d.id}</td>
                   <td>${d.race_id}</td>
-                  <td><pre>${bmText}</pre></td>
+                  <td><pre>${requestText}</pre></td>
                   <td><pre>${predText}</pre></td>
                 `;
                 tbody.appendChild(tr);

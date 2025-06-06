@@ -1,72 +1,51 @@
-# app/scrapers/race.py
+#!/usr/bin/env python3
+"""
+Test script to extract runner data from a specific Unibet race URL
+and export to CSV for verification.
+"""
 
-import sys
 import asyncio
-import logging
-import httpx
+import csv
 import json
-import math
-import pprint
+import logging
 from datetime import datetime
+from pathlib import Path
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from sqlmodel import Session, select
-
-from app.db import engine
-from app.models import Race, RaceDetail
-
-# ─── configure logging ──────────────────────────────────────────────────────────
+# Configure logging
 logging.basicConfig(
-    format="%(asctime)s %(levelname)7s %(name)s │ %(message)s",
-    level=logging.DEBUG,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
 )
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-PREDICT_URL = (
-    "http://localhost:8080/predict?bankroll=81"
-)
+TEST_URL = "https://www.unibet.fr/turf/race/02-06-2025-R2-C5-cholet-prix-des-capucines.html"
 
-FORWARD_URL = "http://127.0.0.1:5173/place-bets"
-
-def round_down(amount: float) -> int:
-    return max(int(amount), 1)
-
-def _scrape_sync(race_id: int):
-    log.info("→ _scrape_sync starting for race_id=%d", race_id)
-
-    if sys.platform.startswith("win"):
-        policy = asyncio.get_event_loop_policy()
-        if not isinstance(policy, asyncio.WindowsProactorEventLoopPolicy):
-            log.debug("Setting WindowsProactorEventLoopPolicy")
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-    with Session(engine) as sess:
-        race = sess.exec(select(Race).where(Race.id == race_id)).one()
-    url = race.url
-    log.info("→ Scraping race %d @ %s", race_id, url)
-
-    try:
-        with sync_playwright() as p:
-            log.debug("Launching headless Chromium")
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-
-            log.debug("Navigating to page (networkidle)")
-            page.goto(url, wait_until="networkidle", timeout=60_000)
-
-            # First try to click on "Tableau des partants" if it exists
+async def extract_runners_data(url: str):
+    """Extract runner data using the runners.js logic"""
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page(ignore_https_errors=True)
+        
+        try:
+            logger.info(f"Navigating to: {url}")
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # Try to click "Tableau des partants" if it exists
             try:
                 tableau_button = page.locator("span.text:has-text('Tableau des partants')")
-                if tableau_button.count() > 0:
-                    tableau_button.click()
-                    page.wait_for_timeout(2000)  # Wait for content to load
+                if await tableau_button.count() > 0:
+                    await tableau_button.click()
+                    await page.wait_for_timeout(2000)
+                    logger.info("Clicked 'Tableau des partants'")
             except Exception as e:
-                log.warning("Could not click 'Tableau des partants': %s", e)
-
-            log.debug("Running runners extraction JavaScript")
+                logger.warning(f"Could not click 'Tableau des partants': {e}")
             
-            # Enhanced JavaScript that extracts structured runner data
-            js = """
+            logger.info("Running extraction JavaScript...")
+            
+            # The enhanced JavaScript extraction logic
+            js_code = """
             () => {
                 // Race title block
                 let title = document
@@ -95,6 +74,10 @@ def _scrape_sync(race_id: int):
                     race_id = `${titlePart}_${trackPart}`.toLowerCase();
                 }
                 
+                console.log(`Race ID: ${race_id}`);
+                console.log(`Title: ${title}`);
+                console.log(`Track: ${track}`);
+                
                 let runners = [];
                 
                 // Method 1: Parse structured runner list - prioritize the detailed table
@@ -109,6 +92,7 @@ def _scrape_sync(race_id: int):
                     const legendItem = list.querySelector('li.legend');
                     if (legendItem) {
                         const columnCount = legendItem.querySelectorAll('div, span').length;
+                        console.log(`Found list with ${columnCount} columns`);
                         if (columnCount > maxColumns) {
                             maxColumns = columnCount;
                             bestList = list;
@@ -118,6 +102,9 @@ def _scrape_sync(race_id: int):
                 
                 if (bestList) {
                     runnerItems = bestList.querySelectorAll('li.runner-item');
+                    console.log(`Using best list with ${maxColumns} columns, found ${runnerItems.length} runners`);
+                } else {
+                    console.log(`Using default selection, found ${runnerItems.length} runners`);
                 }
                 
                 // Collect race results data
@@ -170,6 +157,8 @@ def _scrape_sync(race_id: int):
                         }
                     });
                 }
+                
+                console.log(`Found results data for ${Object.keys(resultsData).length} horses`);
                 
                 runnerItems.forEach((item, index) => {
                     let runner = {
@@ -326,6 +315,8 @@ def _scrape_sync(race_id: int):
                         }
                     }
                     
+                    console.log(`Processed runner ${index + 1}: ${runner.horse_name} (#${runner.number})`);
+                    
                     // Only add if we have a horse name
                     if (runner.horse_name && runner.horse_name.length > 1) {
                         runners.push(runner);
@@ -334,6 +325,7 @@ def _scrape_sync(race_id: int):
                 
                 // Fallback text parsing if no structured data
                 if (runners.length === 0) {
+                    console.log("No structured runners found, trying fallback text parsing");
                     const runnerLists = document.querySelectorAll('.runners-list');
                     let consolidatedText = '';
                     
@@ -382,6 +374,8 @@ def _scrape_sync(race_id: int):
                     }
                 });
 
+                console.log(`Final result: ${uniqueRunners.length} unique runners`);
+
                 return {
                     race_info: {
                         race_id: race_id,
@@ -396,103 +390,123 @@ def _scrape_sync(race_id: int):
             }
             """
             
-            try:
-                race_data = page.evaluate(js)
-                log.info("✔ Runners extraction returned %d runners", len(race_data.get('runners', [])))
-            except PlaywrightTimeoutError:
-                log.error("⏰ Timeout running runners extraction on race %d", race_id)
-                race_data = None
+            # Execute the extraction
+            result = await page.evaluate(js_code)
+            logger.info(f"Extraction completed. Found {len(result.get('runners', []))} runners")
+            
+            return result
+            
+        except PlaywrightTimeoutError:
+            logger.error("Timeout occurred while loading the page")
+            return None
+        except Exception as e:
+            logger.error(f"Error during extraction: {e}")
+            return None
+        finally:
+            await browser.close()
 
-            prediction_response = None
+def save_to_csv(data: dict, output_path: Path):
+    """Save extracted data to CSV file"""
+    
+    if not data or not data.get('runners'):
+        logger.error("No runner data to save")
+        return
+    
+    # CSV headers matching the runner data structure
+    headers = [
+        'Race_ID', 'Title', 'Meta', 'Track', 'Place', 'Number', 'Horse_Name', 
+        'Jockey', 'Age_Sex', 'Equipment', 'Weight', 'Times', 
+        'Odds_Morning', 'Odds_Live', 'Trainer', 'Distance', 'Musique', 'Additional_Info'
+    ]
+    
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # Write headers
+        writer.writerow(headers)
+        
+        # Write runner data
+        for runner in data['runners']:
+            row = [
+                runner.get('race_id', ''),
+                runner.get('title', ''),
+                runner.get('meta', ''),
+                runner.get('track', ''),
+                runner.get('place', ''),
+                runner.get('number', ''),
+                runner.get('horse_name', ''),
+                runner.get('jockey', ''),
+                runner.get('age_sex', ''),
+                runner.get('equipment', ''),
+                runner.get('weight', ''),
+                runner.get('times', ''),
+                runner.get('odds_morning', ''),
+                runner.get('odds_live', ''),
+                runner.get('trainer', ''),
+                runner.get('distance', ''),
+                runner.get('musique', ''),
+                runner.get('additional_info', '')
+            ]
+            writer.writerow(row)
+    
+    logger.info(f"Data saved to {output_path}")
 
-            if race_data and race_data.get('runners'):
-                try:
-                    # Send structured JSON data instead of HTML
-                    headers = {"Content-Type": "application/json"}
-                    resp = httpx.post(PREDICT_URL, json=race_data, headers=headers, timeout=10.0)
-                    resp.raise_for_status()
-                    prediction_response = resp.text
-                    log.info("📬 Sent race %d to prediction server (status %d)", race_id, resp.status_code)
+def save_to_json(data: dict, output_path: Path):
+    """Save extracted data to JSON file for debugging"""
+    
+    with open(output_path, 'w', encoding='utf-8') as jsonfile:
+        json.dump(data, jsonfile, indent=2, ensure_ascii=False)
+    
+    logger.info(f"Raw data saved to {output_path}")
 
-                    parsed = json.loads(prediction_response)
-
-                    recommendations = parsed.get("recommendations", [])
-                    
-                    # Add race_id to each recommendation and round down bet amounts
-                    for r in recommendations:
-                        original = r.get("bet_amount", 0)
-                        r["bet_amount"] = round_down(original)
-                        r["race_id"] = race.unibet_id  # Add the race_id field
-
-                    summary = parsed.get("summary", {})
-                    summary.setdefault("boulot_bets", 0)
-                    
-                    # Count bet types for the summary
-                    win_bets = len([r for r in recommendations if r.get("bet_type") == "win"])
-                    place_bets = len([r for r in recommendations if r.get("bet_type") == "place"])
-                    deuzio_bets = len([r for r in recommendations if r.get("bet_type") == "deuzio"])
-                    
-                    # Update summary with required fields
-                    summary.update({
-                        "total_bet_amount": summary.get("total_amount", 0),  # Map total_amount to total_bet_amount
-                        "win_bets": win_bets,
-                        "place_bets": place_bets, 
-                        "deuzio_bets": deuzio_bets,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"  # Add current timestamp
-                    })
-
-                    forwarded_payload = {
-                        "race_url": url,
-                        "recommendations": recommendations,
-                        "summary": summary,
-                    }
-
-                    log.debug("📦 Forwarding payload to place-bets:\n%s", pprint.pformat(forwarded_payload))
-                    forward_resp = httpx.post(FORWARD_URL, json=forwarded_payload, timeout=10.0)
-                    try:
-                        forward_resp.raise_for_status()
-                    except httpx.HTTPStatusError as e:
-                        log.error("❌ Failed with %s\nResponse body:\n%s", e, forward_resp.text)
-                        raise
-                    log.info("🚀 Forwarded prediction to %s (status %d)", FORWARD_URL, forward_resp.status_code)
-
-                except Exception as e:
-                    log.exception("❌ Failed during prediction or forwarding for race %d: %s", race_id, e)
-
-                with Session(engine) as sess:
-                    race_detail = RaceDetail(
-                        race_id=race_id,
-                        bookmarklet_json=race_data,  # Now contains structured runner data
-                        prediction_response=prediction_response,
-                        race_url=url,
-                    )
-                    sess.add(race_detail)
-                    sess.commit()
-                log.info("✅ Saved RaceDetail for race %d", race_id)
-            else:
-                log.error("❌ No runner data extracted for race %d", race_id)
-
-            browser.close()
-
-    except NotImplementedError as nie:
-        log.error("🔴 Playwright subprocess creation failed: %s", nie)
-        log.error("   └─ Ensure ProactorEventLoopPolicy on Windows before starting uvicorn")
-    except Exception:
-        log.exception("🐛 Unexpected error in _scrape_sync for race %d", race_id)
-
-async def run_race_scrape(race_id: int):
-    log.info("Scheduling scrape for race %d", race_id)
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _scrape_sync, race_id)
+async def main():
+    """Main function to run the test"""
+    
+    logger.info("Starting runner extraction test...")
+    logger.info(f"Target URL: {TEST_URL}")
+    
+    # Create output directory
+    output_dir = Path("test_output")
+    output_dir.mkdir(exist_ok=True)
+    
+    # Generate timestamp for unique filenames
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Extract data
+    data = await extract_runners_data(TEST_URL)
+    
+    if data:
+        # Save to CSV
+        csv_path = output_dir / f"runners_test_{timestamp}.csv"
+        save_to_csv(data, csv_path)
+        
+        # Save to JSON for debugging
+        json_path = output_dir / f"runners_test_{timestamp}.json"
+        save_to_json(data, json_path)
+        
+        # Print summary
+        runners = data.get('runners', [])
+        race_info = data.get('race_info', {})
+        
+        print(f"\n{'='*60}")
+        print(f"EXTRACTION SUMMARY")
+        print(f"{'='*60}")
+        print(f"Race: {race_info.get('title', 'Unknown')}")
+        print(f"Track: {race_info.get('track', 'Unknown')}")
+        print(f"Race ID: {race_info.get('race_id', 'Unknown')}")
+        print(f"Runners found: {len(runners)}")
+        print(f"CSV saved to: {csv_path}")
+        print(f"JSON saved to: {json_path}")
+        
+        if runners:
+            print(f"\nFirst few runners:")
+            for i, runner in enumerate(runners[:5]):
+                print(f"  {i+1}. #{runner.get('number', '?')} {runner.get('horse_name', 'Unknown')} - {runner.get('jockey', 'Unknown jockey')}")
+        
+        print(f"\n{'='*60}")
+        
+    else:
+        logger.error("Failed to extract data")
 
 if __name__ == "__main__":
-    import argparse
-
-    if sys.platform.startswith("win"):
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-    parser = argparse.ArgumentParser(description="Scrape one race detail by DB ID")
-    parser.add_argument("race_id", type=int, help="Race.id to scrape")
-    args = parser.parse_args()
-
-    _scrape_sync(args.race_id)
+    asyncio.run(main())
