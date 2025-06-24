@@ -116,7 +116,7 @@ async def _extract_races(page: Page) -> List[Dict[str, Any]]:
 
 def schedule_race(race: Race) -> None:
     race_start_utc = race.race_time.astimezone(timezone.utc)
-    run_time_utc = race_start_utc - timedelta(seconds=80)  # 2 minutes
+    run_time_utc = race_start_utc - timedelta(seconds=59)  # 2 minutes
 
     now_utc = datetime.now(timezone.utc)
     if run_time_utc <= now_utc:

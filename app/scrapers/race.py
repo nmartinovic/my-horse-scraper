@@ -23,7 +23,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 PREDICT_URL = (
-    "http://localhost:8080/predict?bankroll=81"
+    "http://localhost:8080/predict?bankroll=74"
 )
 
 FORWARD_URL = "http://127.0.0.1:5173/place-bets"
@@ -404,9 +404,13 @@ def _scrape_sync(race_id: int):
                 race_data = None
 
             prediction_response = None
+            prediction_request = None
 
             if race_data and race_data.get('runners'):
                 try:
+                    # Store the request data that we're about to send
+                    prediction_request = race_data
+                    
                     # Send structured JSON data instead of HTML
                     headers = {"Content-Type": "application/json"}
                     resp = httpx.post(PREDICT_URL, json=race_data, headers=headers, timeout=10.0)
@@ -462,7 +466,8 @@ def _scrape_sync(race_id: int):
                 with Session(engine) as sess:
                     race_detail = RaceDetail(
                         race_id=race_id,
-                        bookmarklet_json=race_data,  # Now contains structured runner data
+                        bookmarklet_json=race_data,
+                        prediction_request=prediction_request,
                         prediction_response=prediction_response,
                         race_url=url,
                     )
@@ -484,6 +489,11 @@ async def run_race_scrape(race_id: int):
     log.info("Scheduling scrape for race %d", race_id)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _scrape_sync, race_id)
+
+def schedule_race_scrape(race: Race):
+    """Schedule a race scrape job - imported by daily.py"""
+    from app.scrapers.daily import schedule_race
+    schedule_race(race)
 
 if __name__ == "__main__":
     import argparse

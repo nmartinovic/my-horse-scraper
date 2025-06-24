@@ -98,6 +98,16 @@ def dashboard():
     <head>
         <meta charset="utf-8">
         <title>Horse Racing Dashboard</title>
+        <style>
+            table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f4f4f4; }
+            pre { max-width: 300px; max-height: 200px; overflow: auto; font-size: 12px; }
+            button { margin: 5px; padding: 8px 16px; }
+            .json-column { width: 25%; }
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1, h2 { color: #333; }
+        </style>
     </head>
     <body>
         <h1>Horse Racing Dashboard</h1>
@@ -106,7 +116,7 @@ def dashboard():
         <button onclick="reschedule()">Reschedule Jobs</button>
 
         <h2>Races</h2>
-        <table border="1" id="races-table">
+        <table id="races-table">
           <thead><tr>
             <th>ID</th><th>Unibet ID</th><th>Name</th><th>Meeting</th><th>Time</th>
           </tr></thead>
@@ -114,15 +124,19 @@ def dashboard():
         </table>
 
         <h2>Race Details</h2>
-        <table border="1" id="details-table">
+        <table id="details-table">
           <thead><tr>
-            <th>ID</th><th>Race ID</th><th>Request Sent</th><th>Prediction Response</th>
+            <th>ID</th>
+            <th>Race ID</th>
+            <th class="json-column">Scraped Data</th>
+            <th class="json-column">Prediction Request</th>
+            <th class="json-column">Prediction Response</th>
           </tr></thead>
           <tbody></tbody>
         </table>
 
         <h2>Scheduled Scrapes</h2>
-        <table border="1" id="jobs-table">
+        <table id="jobs-table">
           <thead><tr>
             <th>Job ID</th><th>Race ID</th><th>Next Run</th>
           </tr></thead>
@@ -134,9 +148,24 @@ def dashboard():
             const res = await fetch(path);
             return res.json();
         }
+        
+        function formatJSON(data) {
+            if (!data) return '';
+            try {
+                if (typeof data === 'string') {
+                    return JSON.stringify(JSON.parse(data), null, 2);
+                } else {
+                    return JSON.stringify(data, null, 2);
+                }
+            } catch {
+                return data.toString();
+            }
+        }
+        
         async function loadAll() {
             await Promise.all([loadRaces(), loadDetails(), loadJobs()]);
         }
+        
         async function loadRaces() {
             const races = await fetchData('/api/races');
             const tbody = document.querySelector('#races-table tbody');
@@ -155,32 +184,28 @@ def dashboard():
                 tbody.appendChild(tr);
             });
         }
+        
         async function loadDetails() {
             const details = await fetchData('/api/race_details');
             const tbody = document.querySelector('#details-table tbody');
             tbody.innerHTML = '';
             details.forEach(d => {
-                let requestText, predText;
-                try {
-                    requestText = JSON.stringify(JSON.parse(d.bookmarklet_json), null, 2);
-                } catch {
-                    requestText = d.bookmarklet_json;
-                }
-                try {
-                    predText = JSON.stringify(JSON.parse(d.prediction_response), null, 2);
-                } catch {
-                    predText = d.prediction_response || "";
-                }
+                const scrapedData = formatJSON(d.bookmarklet_json);
+                const requestData = formatJSON(d.prediction_request);
+                const responseData = formatJSON(d.prediction_response);
+                
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                   <td>${d.id}</td>
                   <td>${d.race_id}</td>
-                  <td><pre>${requestText}</pre></td>
-                  <td><pre>${predText}</pre></td>
+                  <td><pre>${scrapedData}</pre></td>
+                  <td><pre>${requestData}</pre></td>
+                  <td><pre>${responseData}</pre></td>
                 `;
                 tbody.appendChild(tr);
             });
         }
+        
         async function loadJobs() {
             const jobs = await fetchData('/api/jobs');
             const tbody = document.querySelector('#jobs-table tbody');
@@ -200,20 +225,24 @@ def dashboard():
                 tbody.appendChild(tr);
             });
         }
+        
         async function clearDb() {
             await fetch('/api/db/clear', { method: 'POST' });
             loadAll();
         }
+        
         async function runDaily() {
             await fetch('/api/scrape/daily/run', { method: 'POST' });
             alert('Daily scrape scheduled');
             loadAll();
         }
+        
         async function reschedule() {
             await fetch('/api/reschedule', { method: 'POST' });
             alert('Reschedule triggered');
             loadAll();
         }
+        
         window.onload = loadAll;
         </script>
     </body>

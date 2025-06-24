@@ -19,6 +19,7 @@ class RaceDetail(SQLModel, table=True):
     race_id: int = Field(foreign_key="race.id")
 
     bookmarklet_json: Dict[str, Any] = Field(sa_column=Column(SAJSON))
+    prediction_request: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(SAJSON))
     prediction_response: Optional[str] = None
     race_url: Optional[str] = None
 
