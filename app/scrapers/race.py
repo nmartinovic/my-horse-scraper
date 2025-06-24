@@ -5,7 +5,6 @@ import asyncio
 import logging
 import httpx
 import json
-import math
 import pprint
 from datetime import datetime
 
@@ -27,9 +26,6 @@ PREDICT_URL = (
 )
 
 FORWARD_URL = "http://127.0.0.1:5173/place-bets"
-
-def round_down(amount: float) -> int:
-    return max(int(amount), 1)
 
 def _scrape_sync(race_id: int):
     log.info("→ _scrape_sync starting for race_id=%d", race_id)
@@ -422,10 +418,8 @@ def _scrape_sync(race_id: int):
 
                     recommendations = parsed.get("recommendations", [])
                     
-                    # Add race_id to each recommendation and round down bet amounts
+                    # Add race_id to each recommendation (bet_amount now stays as percentage)
                     for r in recommendations:
-                        original = r.get("bet_amount", 0)
-                        r["bet_amount"] = round_down(original)
                         r["race_id"] = race.unibet_id  # Add the race_id field
 
                     summary = parsed.get("summary", {})
