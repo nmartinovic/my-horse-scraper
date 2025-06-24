@@ -6,7 +6,10 @@ import logging
 import httpx
 import json
 import pprint
+import csv
+import os
 from datetime import datetime
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from sqlmodel import Session, select
@@ -22,10 +25,55 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 PREDICT_URL = (
-    "http://localhost:8080/predict?bankroll=74"
+    "http://127.0.0.1:8080/predict"
 )
 
 FORWARD_URL = "http://127.0.0.1:5173/place-bets"
+
+# CSV file path (in project root)
+CSV_FILE_PATH = Path(__file__).parent.parent.parent / "race_data_log.csv"
+
+def save_to_csv(race_id: int, data_type: str, data: dict, timestamp: str):
+    """
+    Save data to CSV file with each request/response as a separate row
+    
+    Args:
+        race_id: The race ID
+        data_type: Type of data ('prediction_request', 'prediction_response', 'betting_request')
+        data: The actual data (dict or string)
+        timestamp: ISO timestamp string
+    """
+    try:
+        # Ensure CSV file exists with headers
+        file_exists = CSV_FILE_PATH.exists()
+        
+        with open(CSV_FILE_PATH, 'a', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['timestamp', 'race_id', 'data_type', 'data_json']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write header if file is new
+            if not file_exists:
+                writer.writeheader()
+                log.info("Created new CSV file: %s", CSV_FILE_PATH)
+            
+            # Convert data to JSON string if it's a dict
+            if isinstance(data, dict):
+                data_json = json.dumps(data, ensure_ascii=False)
+            else:
+                data_json = str(data)
+            
+            # Write the row
+            writer.writerow({
+                'timestamp': timestamp,
+                'race_id': race_id,
+                'data_type': data_type,
+                'data_json': data_json
+            })
+            
+        log.info("💾 Saved %s for race %d to CSV", data_type, race_id)
+        
+    except Exception as e:
+        log.error("❌ Failed to save to CSV: %s", e)
 
 def _scrape_sync(race_id: int):
     log.info("→ _scrape_sync starting for race_id=%d", race_id)
@@ -401,11 +449,19 @@ def _scrape_sync(race_id: int):
 
             prediction_response = None
             prediction_request = None
+            forwarded_payload = None
+            timestamp = datetime.utcnow().isoformat() + "Z"
 
             if race_data and race_data.get('runners'):
                 try:
                     # Store the request data that we're about to send
                     prediction_request = race_data
+                    
+                    # Extract the scraped race_id for CSV logging
+                    scraped_race_id = race_data.get('race_info', {}).get('race_id', str(race_id))
+                    
+                    # Save prediction request to CSV
+                    save_to_csv(scraped_race_id, "prediction_request", prediction_request, timestamp)
                     
                     # Send structured JSON data instead of HTML
                     headers = {"Content-Type": "application/json"}
@@ -414,7 +470,9 @@ def _scrape_sync(race_id: int):
                     prediction_response = resp.text
                     log.info("📬 Sent race %d to prediction server (status %d)", race_id, resp.status_code)
 
+                    # Parse response and save to CSV
                     parsed = json.loads(prediction_response)
+                    save_to_csv(scraped_race_id, "prediction_response", parsed, timestamp)
 
                     recommendations = parsed.get("recommendations", [])
                     
@@ -436,7 +494,7 @@ def _scrape_sync(race_id: int):
                         "win_bets": win_bets,
                         "place_bets": place_bets, 
                         "deuzio_bets": deuzio_bets,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"  # Add current timestamp
+                        "timestamp": timestamp
                     })
 
                     forwarded_payload = {
@@ -444,6 +502,9 @@ def _scrape_sync(race_id: int):
                         "recommendations": recommendations,
                         "summary": summary,
                     }
+
+                    # Save betting request to CSV
+                    save_to_csv(scraped_race_id, "betting_request", forwarded_payload, timestamp)
 
                     log.debug("📦 Forwarding payload to place-bets:\n%s", pprint.pformat(forwarded_payload))
                     forward_resp = httpx.post(FORWARD_URL, json=forwarded_payload, timeout=10.0)
@@ -463,6 +524,7 @@ def _scrape_sync(race_id: int):
                         bookmarklet_json=race_data,
                         prediction_request=prediction_request,
                         prediction_response=prediction_response,
+                        betting_request=forwarded_payload,
                         race_url=url,
                     )
                     sess.add(race_detail)

@@ -21,6 +21,7 @@ class RaceDetail(SQLModel, table=True):
     bookmarklet_json: Dict[str, Any] = Field(sa_column=Column(SAJSON))
     prediction_request: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(SAJSON))
     prediction_response: Optional[str] = None
+    betting_request: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(SAJSON))
     race_url: Optional[str] = None
 
     scraped_at: datetime = Field(default_factory=datetime.utcnow)

@@ -102,9 +102,9 @@ def dashboard():
             table { border-collapse: collapse; width: 100%; margin: 20px 0; }
             th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
             th { background-color: #f4f4f4; }
-            pre { max-width: 300px; max-height: 200px; overflow: auto; font-size: 12px; }
+            pre { max-width: 250px; max-height: 200px; overflow: auto; font-size: 11px; }
             button { margin: 5px; padding: 8px 16px; }
-            .json-column { width: 25%; }
+            .json-column { width: 20%; }
             body { font-family: Arial, sans-serif; margin: 20px; }
             h1, h2 { color: #333; }
         </style>
@@ -131,6 +131,7 @@ def dashboard():
             <th class="json-column">Scraped Data</th>
             <th class="json-column">Prediction Request</th>
             <th class="json-column">Prediction Response</th>
+            <th class="json-column">Betting Request</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -193,6 +194,7 @@ def dashboard():
                 const scrapedData = formatJSON(d.bookmarklet_json);
                 const requestData = formatJSON(d.prediction_request);
                 const responseData = formatJSON(d.prediction_response);
+                const bettingData = formatJSON(d.betting_request);
                 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
@@ -201,6 +203,7 @@ def dashboard():
                   <td><pre>${scrapedData}</pre></td>
                   <td><pre>${requestData}</pre></td>
                   <td><pre>${responseData}</pre></td>
+                  <td><pre>${bettingData}</pre></td>
                 `;
                 tbody.appendChild(tr);
             });
