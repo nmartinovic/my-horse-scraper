@@ -476,9 +476,34 @@ def _scrape_sync(race_id: int):
 
                     recommendations = parsed.get("recommendations", [])
                     
-                    # Add race_id to each recommendation (bet_amount now stays as percentage)
+                    # Process recommendations to match betting server format
                     for r in recommendations:
-                        r["race_id"] = race.unibet_id  # Add the race_id field
+                        # Add race_id
+                        r["race_id"] = race.unibet_id
+                        
+                        # Rename bet_amount to bet_percentage
+                        if "bet_amount" in r:
+                            r["bet_percentage"] = r.pop("bet_amount")
+                        
+                        # Find horse_number from scraped data by matching horse_name
+                        horse_name = r.get("horse_name", "")
+                        horse_number = None
+                        
+                        # Look up horse number from the scraped runners data
+                        for runner in race_data.get("runners", []):
+                            if runner.get("horse_name", "").strip().upper() == horse_name.strip().upper():
+                                horse_number = runner.get("number", "")
+                                break
+                        
+                        if horse_number:
+                            r["horse_number"] = int(horse_number) if horse_number.isdigit() else horse_number
+                        else:
+                            log.warning("⚠️ Could not find horse_number for '%s'", horse_name)
+                        
+                        # Remove extra fields that betting server doesn't need
+                        fields_to_remove = ["confidence", "edge", "estimated_place_odds", "kelly_fraction", "strategy", "win_odds"]
+                        for field in fields_to_remove:
+                            r.pop(field, None)
 
                     summary = parsed.get("summary", {})
                     summary.setdefault("boulot_bets", 0)
