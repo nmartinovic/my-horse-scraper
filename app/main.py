@@ -12,6 +12,7 @@ from app.db import engine
 from app.models import Race, RaceDetail
 from app.scrapers.daily import run_daily_scrape, reschedule_jobs
 from app.scheduler import scheduler
+from app.scheduler_refresh import setup_hourly_refresh, trigger_manual_refresh  # ← NEW
 
 # On Windows, use SelectorEventLoopPolicy everywhere (so playwright can spawn its subprocesses)
 if sys.platform.startswith("win"):
@@ -30,6 +31,10 @@ app = FastAPI(title="Horse Racing Dashboard")
 async def _start_scheduler():
     scheduler.start()
     logger.info("Scheduler started")
+    
+    # Set up the hourly refresh system ← NEW
+    setup_hourly_refresh()
+    logger.info("Hourly refresh system initialized")
 
 
 @app.on_event("shutdown")
@@ -54,6 +59,15 @@ async def trigger_reschedule():
     logger.info("→ reschedule endpoint called")
     reschedule_jobs()
     return {"status": "rescheduled all jobs"}
+
+
+# NEW: Manual refresh endpoint
+@app.post("/api/refresh", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_refresh():
+    """Manually trigger a smart database refresh that respects race timing."""
+    logger.info("→ manual refresh endpoint called")
+    trigger_manual_refresh()
+    return {"status": "refresh scheduled at optimal time"}
 
 
 @app.get("/api/races")
@@ -85,6 +99,7 @@ def list_jobs():
             "id": job.id,
             "race_id": job.args[0] if job.args else None,
             "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+            "job_type": "refresh" if "refresh" in job.id else "race_scrape" if job.id.startswith("race_") else "other"
         }
         for job in jobs
     ]
@@ -107,6 +122,9 @@ def dashboard():
             .json-column { width: 20%; }
             body { font-family: Arial, sans-serif; margin: 20px; }
             h1, h2 { color: #333; }
+            .refresh-btn { background-color: #4CAF50; color: white; }
+            .job-type-refresh { background-color: #e8f5e8; }
+            .job-type-race { background-color: #fff3e0; }
         </style>
     </head>
     <body>
@@ -114,6 +132,7 @@ def dashboard():
         <button onclick="clearDb()">Clear DB</button>
         <button onclick="runDaily()">Run Daily Scrape</button>
         <button onclick="reschedule()">Reschedule Jobs</button>
+        <button onclick="triggerRefresh()" class="refresh-btn">Smart Refresh</button>
 
         <h2>Races</h2>
         <table id="races-table">
@@ -136,10 +155,10 @@ def dashboard():
           <tbody></tbody>
         </table>
 
-        <h2>Scheduled Scrapes</h2>
+        <h2>Scheduled Jobs</h2>
         <table id="jobs-table">
           <thead><tr>
-            <th>Job ID</th><th>Race ID</th><th>Next Run</th>
+            <th>Job ID</th><th>Type</th><th>Race ID</th><th>Next Run</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -220,9 +239,11 @@ def dashboard():
                     formatted = dt.toLocaleString(undefined, { timeZoneName: 'short' });
                 }
                 const tr = document.createElement('tr');
+                tr.className = `job-type-${j.job_type}`;
                 tr.innerHTML = `
                   <td>${j.id}</td>
-                  <td>${j.race_id}</td>
+                  <td>${j.job_type}</td>
+                  <td>${j.race_id || '—'}</td>
                   <td>${formatted}</td>
                 `;
                 tbody.appendChild(tr);
@@ -243,6 +264,12 @@ def dashboard():
         async function reschedule() {
             await fetch('/api/reschedule', { method: 'POST' });
             alert('Reschedule triggered');
+            loadAll();
+        }
+        
+        async function triggerRefresh() {
+            await fetch('/api/refresh', { method: 'POST' });
+            alert('Smart refresh scheduled at optimal time');
             loadAll();
         }
         

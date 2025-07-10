@@ -33,12 +33,14 @@ FORWARD_URL = "http://127.0.0.1:5173/place-bets"
 # CSV file path (in project root)
 CSV_FILE_PATH = Path(__file__).parent.parent.parent / "race_data_log.csv"
 
+# Fix for app/scrapers/race.py - replace the save_to_csv function
+
 def save_to_csv(race_id: int, data_type: str, data: dict, timestamp: str):
     """
     Save data to CSV file with each request/response as a separate row
     
     Args:
-        race_id: The race ID
+        race_id: The race ID (can be int or string)
         data_type: Type of data ('prediction_request', 'prediction_response', 'betting_request')
         data: The actual data (dict or string)
         timestamp: ISO timestamp string
@@ -70,10 +72,11 @@ def save_to_csv(race_id: int, data_type: str, data: dict, timestamp: str):
                 'data_json': data_json
             })
             
-        log.info("💾 Saved %s for race %d to CSV", data_type, race_id)
+        # Fixed logging - use %s for both string and int race_id
+        log.info(" Saved %s for race %s to CSV", data_type, race_id)
         
     except Exception as e:
-        log.error("❌ Failed to save to CSV: %s", e)
+        log.error(" Failed to save to CSV: %s", e)
 
 def _scrape_sync(race_id: int):
     log.info("→ _scrape_sync starting for race_id=%d", race_id)

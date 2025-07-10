@@ -405,51 +405,48 @@ async def extract_runners_data(url: str):
         finally:
             await browser.close()
 
-def save_to_csv(data: dict, output_path: Path):
-    """Save extracted data to CSV file"""
+def save_to_csv(race_id: int, data_type: str, data: dict, timestamp: str):
+    """
+    Save data to CSV file with each request/response as a separate row
     
-    if not data or not data.get('runners'):
-        logger.error("No runner data to save")
-        return
-    
-    # CSV headers matching the runner data structure
-    headers = [
-        'Race_ID', 'Title', 'Meta', 'Track', 'Place', 'Number', 'Horse_Name', 
-        'Jockey', 'Age_Sex', 'Equipment', 'Weight', 'Times', 
-        'Odds_Morning', 'Odds_Live', 'Trainer', 'Distance', 'Musique', 'Additional_Info'
-    ]
-    
-    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
+    Args:
+        race_id: The race ID (can be int or string)
+        data_type: Type of data ('prediction_request', 'prediction_response', 'betting_request')
+        data: The actual data (dict or string)
+        timestamp: ISO timestamp string
+    """
+    try:
+        # Ensure CSV file exists with headers
+        file_exists = CSV_FILE_PATH.exists()
         
-        # Write headers
-        writer.writerow(headers)
+        with open(CSV_FILE_PATH, 'a', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['timestamp', 'race_id', 'data_type', 'data_json']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write header if file is new
+            if not file_exists:
+                writer.writeheader()
+                log.info("Created new CSV file: %s", CSV_FILE_PATH)
+            
+            # Convert data to JSON string if it's a dict
+            if isinstance(data, dict):
+                data_json = json.dumps(data, ensure_ascii=False)
+            else:
+                data_json = str(data)
+            
+            # Write the row
+            writer.writerow({
+                'timestamp': timestamp,
+                'race_id': race_id,
+                'data_type': data_type,
+                'data_json': data_json
+            })
+            
+        # Fixed logging - use %s for both string and int race_id
+        log.info("Saved %s for race %s to CSV", data_type, race_id)
         
-        # Write runner data
-        for runner in data['runners']:
-            row = [
-                runner.get('race_id', ''),
-                runner.get('title', ''),
-                runner.get('meta', ''),
-                runner.get('track', ''),
-                runner.get('place', ''),
-                runner.get('number', ''),
-                runner.get('horse_name', ''),
-                runner.get('jockey', ''),
-                runner.get('age_sex', ''),
-                runner.get('equipment', ''),
-                runner.get('weight', ''),
-                runner.get('times', ''),
-                runner.get('odds_morning', ''),
-                runner.get('odds_live', ''),
-                runner.get('trainer', ''),
-                runner.get('distance', ''),
-                runner.get('musique', ''),
-                runner.get('additional_info', '')
-            ]
-            writer.writerow(row)
-    
-    logger.info(f"Data saved to {output_path}")
+    except Exception as e:
+        log.error("Failed to save to CSV: %s", e)
 
 def save_to_json(data: dict, output_path: Path):
     """Save extracted data to JSON file for debugging"""
