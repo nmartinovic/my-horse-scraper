@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Test race details
-TEST_RACE_URL = "https://www.unibet.fr/turf/race/04-06-2025-R6-C8-happy-valley-prix-violet-hill-handicap.html"
+TEST_RACE_URL = "https://www.unibet.fr/turf/race/10-07-2025-R2-C1-karlshorst-bonjour-france-rennen.html"
 TEST_RACE_DATA = {
     "unibet_id": "test_argentan_race_001", 
     "name": "PRIX DE LA PLAINE D'ARGENTAN",
