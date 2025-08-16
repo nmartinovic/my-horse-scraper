@@ -30,10 +30,9 @@ PREDICT_URL = (
 
 FORWARD_URL = "http://127.0.0.1:5173/place-bets"
 
-# CSV file path (in project root)
+# CSV file paths (in project root)
 CSV_FILE_PATH = Path(__file__).parent.parent.parent / "race_data_log.csv"
-
-# Fix for app/scrapers/race.py - replace the save_to_csv function
+RUNNERS_CSV_PATH = Path(__file__).parent.parent.parent / "race_runners_log.csv"
 
 def save_to_csv(race_id: int, data_type: str, data: dict, timestamp: str):
     """
@@ -72,11 +71,70 @@ def save_to_csv(race_id: int, data_type: str, data: dict, timestamp: str):
                 'data_json': data_json
             })
             
-        # Fixed logging - use %s for both string and int race_id
-        log.info(" Saved %s for race %s to CSV", data_type, race_id)
+        log.info("Saved %s for race %s to CSV", data_type, race_id)
         
     except Exception as e:
-        log.error(" Failed to save to CSV: %s", e)
+        log.error("Failed to save to CSV: %s", e)
+
+def save_runners_to_csv(runners_data: dict, timestamp: str):
+    """
+    Save individual runner data to structured CSV file
+    
+    Args:
+        runners_data: The race data dict containing runners array
+        timestamp: ISO timestamp string
+    """
+    try:
+        runners = runners_data.get('runners', [])
+        if not runners:
+            log.warning("No runners data to save to CSV")
+            return
+        
+        # Check if CSV file exists
+        file_exists = RUNNERS_CSV_PATH.exists()
+        
+        # Define CSV headers matching your specification
+        headers = [
+            'Race_ID', 'Title', 'Meta', 'Track', 'Place', 'Number', 'Horse_Name', 
+            'Jockey', 'Age_Sex', 'Equipment', 'Weight', 'Times', 
+            'Odds_Morning', 'Odds_Live', 'Trainer', 'Distance', 'Musique', 'Additional_Info'
+        ]
+        
+        with open(RUNNERS_CSV_PATH, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=headers)
+            
+            # Write header if file is new
+            if not file_exists:
+                writer.writeheader()
+                log.info("Created new runners CSV file: %s", RUNNERS_CSV_PATH)
+            
+            # Write each runner as a separate row
+            for runner in runners:
+                writer.writerow({
+                    'Race_ID': runner.get('race_id', ''),
+                    'Title': runner.get('title', ''),
+                    'Meta': runner.get('meta', ''),
+                    'Track': runner.get('track', ''),
+                    'Place': runner.get('place', ''),
+                    'Number': runner.get('number', ''),
+                    'Horse_Name': runner.get('horse_name', ''),
+                    'Jockey': runner.get('jockey', ''),
+                    'Age_Sex': runner.get('age_sex', ''),
+                    'Equipment': runner.get('equipment', ''),
+                    'Weight': runner.get('weight', ''),
+                    'Times': runner.get('times', ''),
+                    'Odds_Morning': runner.get('odds_morning', ''),
+                    'Odds_Live': runner.get('odds_live', ''),
+                    'Trainer': runner.get('trainer', ''),
+                    'Distance': runner.get('distance', ''),
+                    'Musique': runner.get('musique', ''),
+                    'Additional_Info': runner.get('additional_info', '')
+                })
+        
+        log.info("Saved %d runners to CSV for race %s", len(runners), runners_data.get('race_info', {}).get('race_id', 'unknown'))
+        
+    except Exception as e:
+        log.error("Failed to save runners to CSV: %s", e)
 
 def _scrape_sync(race_id: int):
     log.info("→ _scrape_sync starting for race_id=%d", race_id)
@@ -292,6 +350,12 @@ def _scrape_sync(race_id: int):
                         else if (equipmentEl.innerText.trim()) runner.equipment = equipmentEl.innerText.trim();
                     }
                     
+                    // Extract weight
+                    const weightEl = item.querySelector('.weight.more, .poids.more');
+                    if (weightEl) {
+                        runner.weight = weightEl.innerText.trim();
+                    }
+                    
                     // Extract trainer
                     const trainerEl = item.querySelector('.trainer.more');
                     if (trainerEl) {
@@ -463,8 +527,11 @@ def _scrape_sync(race_id: int):
                     # Extract the scraped race_id for CSV logging
                     scraped_race_id = race_data.get('race_info', {}).get('race_id', str(race_id))
                     
-                    # Save prediction request to CSV
+                    # Save prediction request to CSV (existing functionality)
                     save_to_csv(scraped_race_id, "prediction_request", prediction_request, timestamp)
+                    
+                    # NEW: Save individual runners to structured CSV
+                    save_runners_to_csv(race_data, timestamp)
                     
                     # Send structured JSON data instead of HTML
                     headers = {"Content-Type": "application/json"}
