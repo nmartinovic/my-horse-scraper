@@ -1,0 +1,193 @@
+name: Race log staleness alert
+
+on:
+  schedule:
+    # 05:00 UTC = 07:00 Paris (CEST)
+    - cron: "0 5 * * *"
+    # 06:00 UTC = 07:00 Paris (CET)
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Bypass 07:00 Paris guard (for manual test)"
+        type: boolean
+        required: false
+        default: false
+      always_email:
+        description: "Send email even if not stale (for manual test)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: race-log-stale-alert
+  cancel-in-progress: true
+
+env:
+  FILE_PATH: race_runners_log.csv
+  THRESHOLD_HOURS: "24"
+
+jobs:
+  check-and-email:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard — only run at 07:00 Europe/Paris (unless forced)
+        id: guard
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          # Allow manual override
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${FORCE}" = "true" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Guard bypassed via manual 'force' input."
+            exit 0
+          fi
+
+          PARIS_HOUR="$(TZ=Europe/Paris date +%H)"
+          echo "paris_hour=$PARIS_HOUR" >> "$GITHUB_OUTPUT"
+          if [ "$PARIS_HOUR" = "07" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Current Europe/Paris hour: $PARIS_HOUR"
+
+      - name: Check out repo
+        if: steps.guard.outputs.proceed == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Compute staleness
+        if: steps.guard.outputs.proceed == 'true'
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="$FILE_PATH"
+
+          if ! git ls-files --error-unmatch "$FILE" >/dev/null 2>&1; then
+            echo "is_stale=true" >> "$GITHUB_OUTPUT"
+            echo "reason=File '$FILE' not found on branch 'main'." >> "$GITHUB_OUTPUT"
+            echo "last_human=never" >> "$GITHUB_OUTPUT"
+            echo "last_sha=" >> "$GITHUB_OUTPUT"
+            echo "last_author=" >> "$GITHUB_OUTPUT"
+            echo "last_subject=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ts="$(git log -1 --format=%ct -- "$FILE" || true)"
+          sha="$(git log -1 --format=%H -- "$FILE" || true)"
+          author="$(git log -1 --format=%an -- "$FILE" || true)"
+          subject="$(git log -1 --format=%s -- "$FILE" || true)"
+
+          if [ -z "${ts:-}" ]; then
+            echo "is_stale=true" >> "$GITHUB_OUTPUT"
+            echo "reason=No commits found for '$FILE'." >> "$GITHUB_OUTPUT"
+            echo "last_human=never" >> "$GITHUB_OUTPUT"
+            echo "last_sha=" >> "$GITHUB_OUTPUT"
+            echo "last_author=" >> "$GITHUB_OUTPUT"
+            echo "last_subject=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          now="$(date +%s)"
+          age=$(( now - ts ))
+          threshold=$(( THRESHOLD_HOURS * 3600 ))
+          last_human="$(date -u -d "@$ts" +"%Y-%m-%d %H:%M:%S UTC")"
+
+          echo "age_seconds=$age" >> "$GITHUB_OUTPUT"
+          echo "last_ts=$ts" >> "$GITHUB_OUTPUT"
+          echo "last_human=$last_human" >> "$GITHUB_OUTPUT"
+          echo "last_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "last_author=$author" >> "$GITHUB_OUTPUT"
+          echo "last_subject=$subject" >> "$GITHUB_OUTPUT"
+
+          if [ "$age" -gt "$threshold" ]; then
+            echo "is_stale=true" >> "$GITHUB_OUTPUT"
+            echo "reason=Last commit is ${THRESHOLD_HOURS}+ hours old." >> "$GITHUB_OUTPUT"
+          else
+            echo "is_stale=false" >> "$GITHUB_OUTPUT"
+            echo "reason=Last commit is within ${THRESHOLD_HOURS} hours." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Note manual test reason
+        if: steps.guard.outputs.proceed == 'true' && github.event_name == 'workflow_dispatch' && inputs.always_email == true
+        run: |
+          echo "REASON_OVERRIDE=Manual test via workflow_dispatch (forced email)" >> "$GITHUB_ENV"
+
+      - name: Send Brevo email alert
+        if: |
+          steps.guard.outputs.proceed == 'true' &&
+          (
+            steps.compute.outputs.is_stale == 'true' ||
+            (github.event_name == 'workflow_dispatch' && inputs.always_email == true)
+          )
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          ALERT_TO: ${{ secrets.RACELOG_ALERT_TO }}
+          ALERT_FROM_EMAIL: ${{ secrets.RACELOG_FROM_EMAIL }}
+          ALERT_FROM_NAME: "Horse Scraper Bot"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          LAST_SHA: ${{ steps.compute.outputs.last_sha }}
+          LAST_AUTHOR: ${{ steps.compute.outputs.last_author }}
+          LAST_SUBJECT: ${{ steps.compute.outputs.last_subject }}
+          LAST_HUMAN: ${{ steps.compute.outputs.last_human }}
+          REASON: ${{ steps.compute.outputs.reason }}
+          REASON_OVERRIDE: ${{ env.REASON_OVERRIDE }}
+          FILE_PATH: ${{ env.FILE_PATH }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, sys
+          to_env = os.environ.get("ALERT_TO","").strip()
+          if not to_env:
+            print("RACELOG_ALERT_TO not set", file=sys.stderr)
+            sys.exit(1)
+          to_list = [{"email": e.strip()} for e in to_env.split(",") if e.strip()]
+
+          repo = os.environ.get("GITHUB_REPOSITORY","")
+          branch = os.environ.get("GITHUB_REF_NAME","")
+          file_path = os.environ.get("FILE_PATH","race_runners_log.csv")
+          reason = os.environ.get("REASON_OVERRIDE") or os.environ.get("REASON","")
+
+          payload = {
+            "sender": {
+              "name": os.environ.get("ALERT_FROM_NAME","Bot"),
+              "email": os.environ["ALERT_FROM_EMAIL"]
+            },
+            "to": to_list,
+            "subject": f"⚠️ {file_path} alert in {repo}",
+            "htmlContent": f"""
+              <h3>{file_path} alert</h3>
+              <p><b>Repository:</b> {repo}</p>
+              <p><b>Branch:</b> {branch}</p>
+              <p><b>Reason:</b> {reason}</p>
+              <hr>
+              <p><b>Last commit touching file</b></p>
+              <p><b>SHA:</b> {os.environ.get('LAST_SHA','')}</p>
+              <p><b>Author:</b> {os.environ.get('LAST_AUTHOR','')}</p>
+              <p><b>Subject:</b> {os.environ.get('LAST_SUBJECT','')}</p>
+              <p><b>When:</b> {os.environ.get('LAST_HUMAN','')}</p>
+              <p><a href="https://github.com/{repo}/commits/HEAD/{file_path}">View file history</a></p>
+            """,
+            "textContent": f"{file_path} alert in {repo}. Last change at {os.environ.get('LAST_HUMAN','')}. {reason}"
+          }
+
+          with open('/tmp/payload.json','w') as f:
+              json.dump(payload, f)
+          PY
+
+          curl -sS -X POST "https://api.brevo.com/v3/smtp/email" \
+            -H "accept: application/json" \
+            -H "api-key: $BREVO_API_KEY" \
+            -H "content-type: application/json" \
+            --data-binary @/tmp/payload.json
