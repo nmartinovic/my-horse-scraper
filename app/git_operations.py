@@ -49,13 +49,18 @@ def setup_git_auth():
     Configure git to use the GitHub token for authentication
     """
     token = settings.GITHUB_TOKEN
+    username = settings.GITHUB_USERNAME
+    
     if not token:
         logger.error("GITHUB_TOKEN not found in environment")
         return False
         
+    if not username:
+        logger.error("GITHUB_USERNAME not found in environment")
+        return False
+    
     # Set up git credential helper to use the token
-    username = "nmartinovic"  # Your GitHub username
-    repo_url = f"https://{username}:{token}@github.com/nmartinovic/my-horse-scraper.git"
+    repo_url = f"https://{username}:{token}@github.com/{username}/my-horse-scraper.git"
     
     # Update the remote URL to include the token
     success, output = run_git_command(["git", "remote", "set-url", "origin", repo_url])

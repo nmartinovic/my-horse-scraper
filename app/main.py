@@ -57,7 +57,7 @@ def setup_daily_git_job():
 
 def run_git_commit_job():
     """Wrapper function to run git commit and log results"""
-    logger.info("Starting daily git commit job")
+    logger.info("Starting git commit job")
     
     try:
         result = daily_git_commit()
@@ -99,6 +99,59 @@ def run_git_commit_job():
             session.commit()
 
 
+def run_startup_git_push():
+    """Run git push on startup in a separate thread"""
+    import threading
+    
+    def startup_git_task():
+        logger.info("Running startup git commit and push")
+        try:
+            result = daily_git_commit()
+            
+            # Log the startup operation
+            log_entry = ScrapeLog(
+                job_type="startup_git_commit",
+                started_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+                status=result["status"],
+                message=f"Startup: {result['message']}"
+            )
+            
+            with Session(engine) as session:
+                session.add(log_entry)
+                session.commit()
+            
+            if result["status"] == "ok":
+                logger.info("Startup git commit successful: %s", result["message"])
+            elif result["status"] == "disabled":
+                logger.info("Startup git commit skipped: disabled in config")
+            else:
+                logger.warning("Startup git commit failed: %s", result["message"])
+                
+        except Exception as e:
+            logger.exception("Error in startup git commit")
+            
+            # Log the error
+            try:
+                log_entry = ScrapeLog(
+                    job_type="startup_git_commit",
+                    started_at=datetime.utcnow(),
+                    finished_at=datetime.utcnow(),
+                    status="error",
+                    message=f"Startup error: {str(e)}"
+                )
+                
+                with Session(engine) as session:
+                    session.add(log_entry)
+                    session.commit()
+            except:
+                pass  # Don't let logging errors crash startup
+    
+    # Run in background thread to avoid blocking startup
+    thread = threading.Thread(target=startup_git_task, daemon=True)
+    thread.start()
+
+
 @app.on_event("startup")
 async def _start_scheduler():
     scheduler.start()
@@ -111,6 +164,10 @@ async def _start_scheduler():
     # Set up daily git commit job
     setup_daily_git_job()
     logger.info("Daily git commit job initialized")
+    
+    # NEW: Run startup git push
+    run_startup_git_push()
+    logger.info("Startup git commit initiated")
 
 
 @app.on_event("shutdown")
@@ -145,7 +202,6 @@ async def trigger_refresh():
     return {"status": "refresh scheduled at optimal time"}
 
 
-# NEW: Manual git commit endpoint
 @app.post("/api/git/commit", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_git_commit():
     """Manually trigger a git commit of CSV data."""
